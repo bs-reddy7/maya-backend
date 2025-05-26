@@ -2,6 +2,7 @@ fastapi
 uvicorn
 requests
 numpy
+scipy
 whisper
 python-dotenv
 webrtcvad
