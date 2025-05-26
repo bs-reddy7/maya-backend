@@ -2,8 +2,6 @@ fastapi
 uvicorn
 requests
 numpy
-scipy
-sounddevice
 whisper
 python-dotenv
 webrtcvad

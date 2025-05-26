@@ -1,6 +1,5 @@
 import os
 import requests
-import sounddevice as sd
 import numpy as np
 import threading
 import time
@@ -8,7 +7,6 @@ import tempfile
 from scipy.io.wavfile import write
 from dotenv import load_dotenv
 import whisper
-import queue
 import webrtcvad
 from pydub import AudioSegment
 import base64
@@ -69,14 +67,9 @@ if not ELEVENLABS_API_KEY:
 else:
     print(f"🎯 Final API key: {ELEVENLABS_API_KEY[:8]}...{ELEVENLABS_API_KEY[-4:]}")
 
-# === Ultra-fast audio parameters ===
+# === Audio parameters ===
 RATE = 16000
 CHANNELS = 1
-CHUNK_DURATION_MS = 15
-CHUNK_SIZE = int(RATE * CHUNK_DURATION_MS / 1000)
-VAD_AGGRESSIVENESS = 0
-SILENCE_DURATION_MS = 150
-MIN_SPEECH_DURATION_MS = 250
 
 # === Optimized ElevenLabs TTS Client ===
 class ElevenLabsTTSClient:
@@ -182,30 +175,22 @@ class ElevenLabsTTSClient:
             print(f"❌ ElevenLabs synthesis error: {e}")
             return None
     
-    def speak_optimized(self, text, emotion="neutral"):
-        """Optimized speech"""
+    def get_audio_data(self, text, emotion="neutral"):
+        """Get audio data without playing (for API responses)"""
         try:
             if not text or not text.strip():
-                return False
+                return None
             
             audio_data = self.synthesize_streaming(text, emotion)
             if not audio_data:
                 print("⚠️ No audio generated.")
-                return False
+                return None
             
-            audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_data))
-            samples = np.array(audio_segment.get_array_of_samples())
-            if audio_segment.channels == 2:
-                samples = samples.reshape((-1, 2))
-            
-            sd.play(samples, samplerate=audio_segment.frame_rate)
-            sd.wait()
-            
-            return True
+            return audio_data
             
         except Exception as e:
-            print(f"❌ ElevenLabs playback error: {e}")
-            return False
+            print(f"❌ ElevenLabs audio generation error: {e}")
+            return None
     
     def get_usage_stats(self):
         """Get current usage statistics"""
@@ -217,125 +202,20 @@ class ElevenLabsTTSClient:
             "estimated_cost": self.character_count * 0.00018
         }
 
-# === Fast Speech Recognition ===
-class FastASR:
+# === Speech Recognition (for processing uploaded audio) ===
+class AudioProcessor:
     def __init__(self):
-        print("🎤 Loading optimized Whisper for speed...")
+        print("🎤 Loading Whisper for transcription...")
         self.asr_model = whisper.load_model("base", device="cpu")
-        self.vad = webrtcvad.Vad(1)
-        self.audio_queue = queue.Queue()
-        self.is_listening = True
-        print("✅ Fast Whisper ASR ready")
+        print("✅ Whisper ASR ready")
     
-    def stop_listening(self):
-        """Stop listening to prevent feedback"""
-        self.is_listening = False
-        while not self.audio_queue.empty():
-            try:
-                self.audio_queue.get_nowait()
-            except:
-                break
-        print("🔇 Stopped listening")
-    
-    def start_listening(self):
-        """Resume listening"""
-        self.is_listening = True
-        while not self.audio_queue.empty():
-            try:
-                self.audio_queue.get_nowait()
-            except:
-                break
-        print("🎤 Resumed listening")
-    
-    def audio_callback(self, indata, frames, time_info, status):
-        """Audio callback"""
-        try:
-            if self.is_listening:
-                audio_np = np.frombuffer(indata, dtype=np.int16)
-                self.audio_queue.put(audio_np.tobytes())
-        except Exception:
-            pass
-    
-    def detect_speech_fast(self, timeout_seconds=10):
-        """Speech detection"""
-        if not self.is_listening:
-            return None
-            
-        frames = []
-        silence_threshold = int(1500 / CHUNK_DURATION_MS)
-        min_speech_frames = int(600 / CHUNK_DURATION_MS)
-        timeout_frames = int(timeout_seconds * 1000 / CHUNK_DURATION_MS)
-        
-        silence_frames = 0
-        speech_frames = 0
-        frame_count = 0
-        triggered = False
-
-        while not self.audio_queue.empty():
-            try: 
-                self.audio_queue.get_nowait()
-            except: 
-                break
-
-        print("🎤 Listening...")
-        start_time = time.time()
-        
-        while frame_count < timeout_frames and self.is_listening:
-            try:
-                chunk = self.audio_queue.get(timeout=0.02)
-                frame_count += 1
-                
-                audio_np = np.frombuffer(chunk, dtype=np.int16)
-                energy = np.sqrt(np.mean(audio_np.astype(np.float32)**2))
-                peak_amplitude = np.max(np.abs(audio_np))
-                
-                is_speech = (energy > 120 and peak_amplitude > 400) or energy > 250
-                
-                if is_speech:
-                    if not triggered:
-                        print("🗣️ Speaking...")
-                        triggered = True
-                    frames.append(chunk)
-                    speech_frames += 1
-                    silence_frames = 0
-                else:
-                    if triggered:
-                        silence_frames += 1
-                        frames.append(chunk)
-                        
-                        if (silence_frames >= silence_threshold and 
-                            speech_frames >= min_speech_frames):
-                            print("✅ Got your message")
-                            break
-                            
-            except queue.Empty:
-                if triggered and silence_frames >= silence_threshold // 2:
-                    if speech_frames >= min_speech_frames:
-                        break
-                continue
-
-        if not frames or speech_frames < min_speech_frames:
-            return None
-            
-        detection_time = time.time() - start_time
-        print(f"🎤 Captured in {detection_time:.1f}s")
-        return b''.join(frames)
-    
-    def transcribe_fast(self, audio_bytes):
-        """Fast transcription"""
-        if not audio_bytes:
-            return ""
+    def transcribe_audio_file(self, audio_file_path):
+        """Transcribe audio file uploaded from frontend"""
         try:
             start_time = time.time()
             
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                path = tmp.name
-                
-            audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
-            write(path, RATE, audio_np)
-            
             result = self.asr_model.transcribe(
-                path, 
+                audio_file_path, 
                 language="en",
                 fp16=False, 
                 verbose=False,
@@ -349,7 +229,6 @@ class FastASR:
                 best_of=1,
                 patience=1.0
             )
-            os.unlink(path)
             
             transcription_time = time.time() - start_time
             
@@ -360,7 +239,7 @@ class FastASR:
                 
                 words = text.split()
                 if len(words) > 1 and len(text) > 5:
-                    print(f"📝 You: '{text}' (⚡{transcription_time:.1f}s)")
+                    print(f"📝 Transcribed: '{text}' (⚡{transcription_time:.1f}s)")
                     return text
                 else:
                     print(f"🔇 Filtered: '{text}'")
@@ -370,8 +249,23 @@ class FastASR:
         except Exception as e:
             print(f"❌ Transcription error: {e}")
             return ""
+    
+    def transcribe_audio_bytes(self, audio_bytes):
+        """Transcribe audio from bytes (for uploaded audio data)"""
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp.write(audio_bytes)
+                path = tmp.name
+            
+            text = self.transcribe_audio_file(path)
+            os.unlink(path)
+            return text
+            
+        except Exception as e:
+            print(f"❌ Audio bytes transcription error: {e}")
+            return ""
 
-# === SIMPLE APPROACH: Complete Generation Then Speech ===
+# === Maya LLM (unchanged) ===
 class SimpleMayaLLM:
     def __init__(self):
         self.model_name = "gemma-companion:latest"
@@ -532,10 +426,10 @@ Maya:"""
         
         return response, emotion
 
-# === Simple Maya Therapy Bot ===
-class MayaTherapyBot:
+# === Backend API Service (for web integration) ===
+class MayaBackendService:
     def __init__(self, api_key):
-        print("🧘 Initializing Maya - Your Custom Therapy Companion...")
+        print("🧘 Initializing Maya Backend Service...")
         
         if not api_key:
             print("❌ ELEVENLABS_API_KEY not found!")
@@ -545,135 +439,180 @@ class MayaTherapyBot:
         jessica_voice_id = "cgSgspJ2msm6clMCkdW9"
         
         self.tts = ElevenLabsTTSClient(api_key, jessica_voice_id)
-        self.asr = FastASR()
-        self.llm = SimpleMayaLLM()  # ← Back to simple approach
-        self.is_speaking = False
-        self.stop_event = threading.Event()
+        self.audio_processor = AudioProcessor()
+        self.llm = SimpleMayaLLM()
         
         if not self.tts.test_connection():
             print("❌ Failed to connect to ElevenLabs API!")
             return
         
-        print(f"✅ Maya ready with Jessica voice!")
-        
-    def speak_async(self, text, emotion="neutral"):
-        def _speak():
-            self.is_speaking = True
-            self.asr.stop_listening()
-            
-            try:
-                success = self.tts.speak_optimized(text, emotion)
-                if not success:
-                    print("❌ Speech synthesis failed")
-            finally:
-                time.sleep(0.5)
-                self.is_speaking = False
-                self.asr.start_listening()
-                
-        thread = threading.Thread(target=_speak, daemon=True)
-        thread.start()
-        return thread
+        print(f"✅ Maya Backend Service ready with Jessica voice!")
     
-    def run_conversation(self):
-        print("🧘 Maya - Your Personal Therapy Companion")
-        print("🎯 Powered by your UPDATED gemma-companion:latest (1.7GB)")
-        print("📦 Model ID: 5753d9fbc524")
-        print("🎵 Speaking with Jessica's warm voice")
-        print("💬 Complete generation → Clean speech (no interruptions)")
+    def process_audio_input(self, audio_data):
+        """Process audio input from frontend and return text + audio response"""
+        try:
+            # 1. Transcribe the audio
+            print("🎤 Processing audio input...")
+            user_text = self.audio_processor.transcribe_audio_bytes(audio_data)
+            
+            if not user_text or len(user_text.strip()) < 2:
+                return None, None, "No speech detected"
+            
+            # 2. Generate Maya's response
+            print(f"🔄 Processing: '{user_text}'")
+            response_text, emotion = self.llm.query_optimized(user_text)
+            
+            if not response_text:
+                return user_text, None, "No response generated"
+            
+            # 3. Generate audio for the response
+            print(f"🎵 Generating audio for: '{response_text}'")
+            audio_response = self.tts.get_audio_data(response_text, emotion)
+            
+            if not audio_response:
+                return user_text, response_text, "Audio generation failed"
+            
+            return user_text, response_text, audio_response
+            
+        except Exception as e:
+            print(f"❌ Error processing audio input: {e}")
+            return None, None, f"Error: {e}"
+    
+    def process_text_input(self, text_input):
+        """Process text input and return text + audio response"""
+        try:
+            if not text_input or len(text_input.strip()) < 2:
+                return None, "Text input too short"
+            
+            # Generate Maya's response
+            print(f"🔄 Processing text: '{text_input}'")
+            response_text, emotion = self.llm.query_optimized(text_input)
+            
+            if not response_text:
+                return None, "No response generated"
+            
+            # Generate audio for the response
+            print(f"🎵 Generating audio for: '{response_text}'")
+            audio_response = self.tts.get_audio_data(response_text, emotion)
+            
+            if not audio_response:
+                return response_text, "Audio generation failed"
+            
+            return response_text, audio_response
+            
+        except Exception as e:
+            print(f"❌ Error processing text input: {e}")
+            return None, f"Error: {e}"
+    
+    def get_usage_stats(self):
+        """Get current usage statistics"""
+        return self.tts.get_usage_stats()
+
+# === Flask API Example (optional) ===
+def create_flask_app():
+    """Example Flask app for web integration"""
+    try:
+        from flask import Flask, request, jsonify, send_file
+        from flask_cors import CORS
+        import io
         
-        print("🎤 Starting audio input...")
-        with sd.RawInputStream(
-            samplerate=RATE,
-            blocksize=CHUNK_SIZE,
-            dtype='int16',
-            channels=CHANNELS,
-            callback=self.asr.audio_callback
-        ):
-            # Welcome message
-            welcome = "Hey there! I'm Maya. What's going on with you today?"
-            print("🎵 Maya says:")
-            self.speak_async(welcome, "neutral").join()
-            
-            print("\n🎙️ Ready to chat! Say 'goodbye' when you're done.")
-            print("💬 Maya generates complete thoughts, then speaks clearly")
-            print("🎯 Simple, reliable conversation with your updated model\n")
+        app = Flask(__name__)
+        CORS(app)
+        
+        # Initialize Maya service
+        api_key = ELEVENLABS_API_KEY
+        if not api_key:
+            print("❌ No API key for Flask app!")
+            return None
+        
+        maya_service = MayaBackendService(api_key)
+        
+        @app.route('/api/chat/audio', methods=['POST'])
+        def chat_audio():
+            """Handle audio input from frontend"""
+            try:
+                if 'audio' not in request.files:
+                    return jsonify({'error': 'No audio file provided'}), 400
+                
+                audio_file = request.files['audio']
+                audio_data = audio_file.read()
+                
+                user_text, response_text, audio_response = maya_service.process_audio_input(audio_data)
+                
+                if isinstance(audio_response, str):  # Error message
+                    return jsonify({'error': audio_response}), 500
+                
+                if audio_response:
+                    # Return JSON with text and audio URL
+                    return jsonify({
+                        'user_text': user_text,
+                        'response_text': response_text,
+                        'audio_url': '/api/audio/latest'  # Endpoint to get audio
+                    })
+                else:
+                    return jsonify({'error': 'Failed to generate response'}), 500
+                
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+        
+        @app.route('/api/chat/text', methods=['POST'])
+        def chat_text():
+            """Handle text input from frontend"""
+            try:
+                data = request.json
+                text_input = data.get('text', '').strip()
+                
+                if not text_input:
+                    return jsonify({'error': 'No text provided'}), 400
+                
+                response_text, audio_response = maya_service.process_text_input(text_input)
+                
+                if isinstance(audio_response, str):  # Error message
+                    return jsonify({'error': audio_response}), 500
+                
+                if audio_response:
+                    return jsonify({
+                        'response_text': response_text,
+                        'audio_url': '/api/audio/latest'
+                    })
+                else:
+                    return jsonify({'error': 'Failed to generate response'}), 500
+                
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+        
+        # Store latest audio for retrieval
+        latest_audio = None
+        
+        @app.route('/api/audio/latest', methods=['GET'])
+        def get_latest_audio():
+            """Get the latest generated audio"""
+            if latest_audio:
+                return send_file(
+                    io.BytesIO(latest_audio),
+                    mimetype='audio/mpeg',
+                    as_attachment=False
+                )
+            else:
+                return jsonify({'error': 'No audio available'}), 404
+        
+        @app.route('/api/stats', methods=['GET'])
+        def get_stats():
+            """Get usage statistics"""
+            stats = maya_service.get_usage_stats()
+            return jsonify(stats)
+        
+        return app
+        
+    except ImportError:
+        print("❌ Flask not installed. Install with: pip install flask flask-cors")
+        return None
 
-            silence_count = 0
-            conversation_count = 0
-            
-            while not self.stop_event.is_set():
-                try:
-                    if conversation_count % 5 == 0 and conversation_count > 0:
-                        stats = self.tts.get_usage_stats()
-                        print(f"💰 Usage: {stats['characters_used']} chars, ~${stats['estimated_cost']:.4f}")
-                    
-                    if not self.is_speaking:
-                        audio_data = self.asr.detect_speech_fast(timeout_seconds=8)
-                        if not audio_data:
-                            silence_count += 1
-                            if silence_count >= 3:
-                                encouragements = [
-                                    "I'm here whenever you're ready to talk.",
-                                    "Take your time. What's on your heart?",
-                                    "I'm listening. What would you like to share?"
-                                    ]
-                                response = encouragements[conversation_count % len(encouragements)]
-                                print(f"🎵 Maya says: '{response}'")
-                                self.speak_async(response, "neutral").join()
-                                silence_count = 0
-                            continue
-                    else:
-                        time.sleep(0.2)
-                        continue
-
-                    silence_count = 0
-                    conversation_count += 1
-
-                    user_text = self.asr.transcribe_fast(audio_data)
-                    if not user_text or len(user_text.strip()) < 2:
-                        continue
-
-                    # Exit
-                    if any(w in user_text.lower().split() for w in ["goodbye", "bye", "exit", "quit"]):
-                        farewell = "It was really good talking with you today. Take care of yourself, and I'm here whenever you need someone to listen. See you later!"
-                        print(f"🎵 Maya says: '{farewell}'")
-                        self.speak_async(farewell, "happy").join()
-                        break
-
-                    # Get complete response from updated Maya
-                    print("🔄 Processing with your updated Maya model...")
-                    response, emotion = self.llm.query_optimized(user_text)
-                    
-                    if response and response.strip():
-                        # Speak the complete response
-                        print(f"🎵 Maya says: '{response}'")
-                        self.speak_async(response, emotion).join()
-                        print("✅ Maya finished speaking, ready for your response...")
-                    else:
-                        fallback = "Tell me more about that."
-                        print(f"🎵 Maya says: '{fallback}'")
-                        self.speak_async(fallback, "calm").join()
-
-                except KeyboardInterrupt:
-                    print("\n👋 Chat ended")
-                    break
-                except Exception as e:
-                    print(f"❌ Error: {e}")
-                    continue
-
-        # Final stats
-        stats = self.tts.get_usage_stats()
-        print(f"\n📊 Session Complete!")
-        print(f"💰 Total characters used: {stats['characters_used']}")
-        print(f"💳 Estimated cost: ${stats['estimated_cost']:.4f}")
-        print(f"⏱️ Session duration: {stats['session_duration']}")
-        print("🧘 Maya with updated model signing off! Great conversation!")
-
-# === Main Function ===
+# === Main Function (for testing) ===
 def main():
-    print("🧘 Maya - Your Personal Therapy Companion")
-    print("🎯 Powered by YOUR Custom gemma-companion:latest")
-    print("🎵 Jessica Voice + Sentence-by-Sentence Speech")
+    print("🧘 Maya Backend Service")
+    print("🎯 No mic recording - Frontend handles audio input")
+    print("🎵 ElevenLabs TTS + Whisper ASR + Custom Maya LLM")
     print("=" * 55)
     
     # Check for API key
@@ -687,14 +626,32 @@ def main():
     else:
         print("✅ Using API key from environment")
     
-    print("\n🎵 Using Jessica voice for natural conversations")
-    print("🎯 Sentence-by-sentence speech for perfect timing")
-    print("💬 Maya speaks complete thoughts as they're ready")
-    print("🚀 Starting conversation...")
-    
     try:
-        bot = MayaTherapyBot(api_key)
-        bot.run_conversation()
+        # Initialize backend service
+        maya_service = MayaBackendService(api_key)
+        
+        # Example usage
+        print("\n🧪 Testing text input processing...")
+        response_text, audio_data = maya_service.process_text_input("Hello Maya, how are you?")
+        
+        if response_text:
+            print(f"✅ Response: {response_text}")
+            print(f"🎵 Audio generated: {len(audio_data) if audio_data else 0} bytes")
+        
+        # Flask app example
+        print("\n🌐 Starting Flask API server...")
+        app = create_flask_app()
+        if app:
+            print("✅ Flask app ready!")
+            print("📡 Endpoints:")
+            print("   POST /api/chat/audio - Send audio file")
+            print("   POST /api/chat/text - Send text message")
+            print("   GET /api/audio/latest - Get latest audio response")
+            print("   GET /api/stats - Get usage statistics")
+            print("\n🚀 Run with: app.run(host='0.0.0.0', port=5000, debug=True)")
+        else:
+            print("❌ Flask app initialization failed")
+        
     except KeyboardInterrupt:
         print("\n👋 Goodbye!")
     except Exception as e:
