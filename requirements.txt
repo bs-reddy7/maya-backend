@@ -1,55 +1,12 @@
-# Web Framework & Server (Uvicorn + Flask)
-flask==2.3.3
-flask-cors==4.0.0
-uvicorn==0.23.2
-gunicorn==21.2.0
-werkzeug==2.3.7
-
-# HTTP Requests
-requests==2.31.0
-
-# Audio Processing
-numpy==1.24.3
-scipy==1.11.2
-pydub==0.25.1
-
-# Speech Recognition
-whisper==1.1.10
-openai-whisper==20231117
-
-# Voice Activity Detection  
-webrtcvad==2.0.10
-
-# Environment Variables
-python-dotenv==1.0.0
-
-# Audio/Media Processing Dependencies
-ffmpeg-python==0.2.0
-
-# Additional Web Dependencies
-python-multipart==0.0.6
-
-# Date/Time utilities (if needed)
-python-dateutil==2.8.2
-
-# File handling
-secure-filename==0.1
-
-# Logging (usually built-in, but just in case)
-coloredlogs==15.0.1
-
-# Memory optimization for Whisper
-torch==2.0.1
-torchaudio==2.0.2
-
-# JSON handling (usually built-in)
-simplejson==3.19.1
-
-# Threading utilities
-concurrent-futures==3.1.1
-
-# Error tracking (optional but recommended for production)
-sentry-sdk[flask]==1.32.0
-
-# Health check utilities
-psutil==5.9.5
+# Minimal requirements for Maya bot
+flask
+flask-cors
+uvicorn
+requests
+numpy
+scipy
+pydub
+openai-whisper
+webrtcvad
+python-dotenv
+python-multipart
