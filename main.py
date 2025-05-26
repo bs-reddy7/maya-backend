@@ -1,64 +1,81 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
-import os
-import uuid
-from voice_bot import MayaTherapyBot
+from voice_bot import MayaBackendService, ELEVENLABS_API_KEY
+import io
 
-# === Create bot instance ===
-bot = MayaTherapyBot(api_key=os.getenv("ELEVENLABS_API_KEY", "sk_a37c5cfeb89d0e2ab57a34dd1fdd187cd996d09e04389a69"))
-
+# === FastAPI Setup ===
 app = FastAPI()
-
-# === Enable CORS for frontend ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Change this to frontend URL on Vercel later
+    allow_origins=["*"],  # For production, restrict this!
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# === Ensure audio folder exists ===
-AUDIO_FOLDER = "audio"
-os.makedirs(AUDIO_FOLDER, exist_ok=True)
+# === Initialize Maya's Backend Service ===
+maya = MayaBackendService(api_key=ELEVENLABS_API_KEY)
+latest_audio = None
 
+# === Route: Process Audio Input ===
 @app.post("/listen")
 async def listen(audio: UploadFile = File(...)):
+    global latest_audio
     try:
-        # Save uploaded voice temporarily
-        raw_path = os.path.join(AUDIO_FOLDER, f"{uuid.uuid4()}.wav")
-        with open(raw_path, "wb") as f:
-            f.write(await audio.read())
+        audio_data = await audio.read()
+        user_text, response_text, audio_response = maya.process_audio_input(audio_data)
 
-        # Transcribe user message
-        user_input = bot.asr.transcribe_fast(open(raw_path, "rb").read())
-        if not user_input:
-            return JSONResponse({"error": "Could not transcribe input."}, status_code=400)
+        if isinstance(audio_response, str):  # If it's an error message
+            return JSONResponse(status_code=500, content={"error": audio_response})
 
-        # Get LLM response + emotion
-        response_text, emotion = bot.llm.query_optimized(user_input)
+        if audio_response:
+            latest_audio = audio_response
+            return {
+                "user_text": user_text,
+                "response_text": response_text,
+                "audio_url": "/audio"
+            }
 
-        # Synthesize voice
-        audio_data = bot.tts.synthesize_streaming(response_text, emotion)
-        if not audio_data:
-            return JSONResponse({"error": "TTS generation failed."}, status_code=500)
+        return JSONResponse(status_code=400, content={"error": "Failed to process audio"})
+    
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
-        output_path = os.path.join(AUDIO_FOLDER, f"{uuid.uuid4()}.mp3")
-        with open(output_path, "wb") as f:
-            f.write(audio_data)
+# === Route: Serve Audio File ===
+@app.get("/audio")
+def get_audio():
+    if latest_audio:
+        return StreamingResponse(io.BytesIO(latest_audio), media_type="audio/mpeg")
+    return JSONResponse(status_code=404, content={"error": "No audio available"})
 
-        return {
-            "text": response_text,
-            "audio_url": f"/audio/{os.path.basename(output_path)}"
-        }
+# === Route: Text Input (optional)
+@app.post("/text")
+async def text_input(payload: dict):
+    try:
+        text_input = payload.get("text", "").strip()
+        if not text_input:
+            return JSONResponse(status_code=400, content={"error": "Text input is empty"})
+
+        response_text, audio_response = maya.process_text_input(text_input)
+
+        if isinstance(audio_response, str):
+            return JSONResponse(status_code=500, content={"error": audio_response})
+
+        if audio_response:
+            global latest_audio
+            latest_audio = audio_response
+            return {
+                "response_text": response_text,
+                "audio_url": "/audio"
+            }
+
+        return JSONResponse(status_code=400, content={"error": "No response generated"})
 
     except Exception as e:
-        return JSONResponse({"error": f"Something went wrong: {str(e)}"}, status_code=500)
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
-@app.get("/audio/{filename}")
-def get_audio(filename: str):
-    file_path = os.path.join(AUDIO_FOLDER, filename)
-    if os.path.exists(file_path):
-        return FileResponse(file_path, media_type="audio/mpeg")
-    return JSONResponse({"error": "Audio file not found"}, status_code=404)
+# === Route: Usage Stats ===
+@app.get("/stats")
+def stats():
+    return maya.get_usage_stats()
