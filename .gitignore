@@ -1,0 +1,8 @@
+__pycache__/
+audio/
+*.mp3
+*.wav
+*.safetensors
+*.bin
+.env
+.vscode/
