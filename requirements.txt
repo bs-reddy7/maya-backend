@@ -1,7 +1,6 @@
-# Minimal requirements for Maya bot
-flask
-flask-cors
+fastapi
 uvicorn
+python-multipart
 requests
 numpy
 scipy
@@ -9,4 +8,3 @@ pydub
 openai-whisper
 webrtcvad
 python-dotenv
-python-multipart
