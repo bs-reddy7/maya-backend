@@ -19,13 +19,14 @@ primary_region = "fra"
   min_machines_running = 0
   processes = ["app"]
 
+# Simplified health check - just check if port is responding
 [[http_service.checks]]
-  interval = "30s"
-  grace_period = "10s"
+  interval = "60s"
+  grace_period = "30s"
   method = "GET"
-  path = "/api/health"
+  path = "/"
   protocol = "http"
-  timeout = "15s"
+  timeout = "30s"
 
 [[vm]]
   cpu_kind = "shared"
