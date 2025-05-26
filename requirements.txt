@@ -1,10 +1,25 @@
-fastapi
-uvicorn
-python-multipart
-requests
-numpy
-scipy
-pydub
-openai-whisper
-webrtcvad
-python-dotenv
+# Complete requirements for full Maya bot functionality
+fastapi==0.104.1
+uvicorn[standard]==0.23.2
+python-multipart==0.0.6
+requests==2.31.0
+python-dotenv==1.0.0
+
+# Audio Processing (Full Stack)
+numpy>=1.21.0
+scipy>=1.7.0
+pydub==0.25.1
+
+# Speech Recognition (Full Whisper)
+openai-whisper>=20230918
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# Voice Activity Detection
+webrtcvad>=2.0.10
+
+# Audio/Media Processing
+ffmpeg-python>=0.2.0
+
+# Additional utilities
+python-dateutil>=2.8.0
