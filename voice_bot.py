@@ -20,7 +20,7 @@ print(f"📁 Working directory: {os.getcwd()}")
 print(f"📄 .env file exists: {os.path.exists('.env')}")
 
 # Manual .env loading for debugging
-ELEVENLABS_API_KEY = "sk_a37c5cfeb89d0e2ab57a34dd1fdd187cd996d09e04389a69"
+ELEVENLABS_API_KEY = "ELEVENLABS_API_KEY"
 LLM_API_URL = "http://localhost:11434/api/generate"
 
 # Try multiple methods to load API key
