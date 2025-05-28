@@ -206,7 +206,7 @@ class ElevenLabsTTSClient:
 class AudioProcessor:
     def __init__(self):
         print("🎤 Loading Whisper for transcription...")
-        self.asr_model = whisper.load_model("base", device="cpu")
+        self.asr_model = whisper.load_model("tiny", device="cpu")
         print("✅ Whisper ASR ready")
     
     def transcribe_audio_file(self, audio_file_path):
